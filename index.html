@@ -38,7 +38,7 @@
   }
   #brand{padding:24px 20px 18px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:11px;}
   #brand .mark{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:1px solid rgba(255,255,255,.1);}
-  #brand h1{font-family:var(--disp);font-size:14.5px;margin:0 0 2px;font-weight:600;letter-spacing:.1px;line-height:1.25;color:#fff;}
+  #brand h1{font-family:var(--disp);font-size:14.5px;margin:0 0 2px;font-weight:800;letter-spacing:-.035em;line-height:1.25;color:#fff;}
   #brand p{font-size:10px;margin:0;color:rgba(255,255,255,.45);letter-spacing:.6px;text-transform:uppercase;}
   nav{padding:16px 12px;flex:1;}
   .nav-eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:rgba(255,255,255,.35);padding:4px 12px 10px;font-weight:600;}
@@ -270,7 +270,7 @@
       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       ESCRITORIO
     </div>
-    <h2 style="margin:0 0 4px;">Fachadas Ventiladas</h2>
+    <h2 style="margin:0 0 4px;font-family:var(--disp);font-weight:800;letter-spacing:-.035em;font-size:26px;line-height:1.02;">Fachadas Ventiladas</h2>
     <p class="sub" style="color:var(--text-secondary);margin:0 0 22px;">Inicia sesión para continuar</p>
     <div class="field"><label for="authEmail">Email</label><input id="authEmail" type="email" autocomplete="username" style="width:100%;height:44px;padding:0 12px;background:var(--surface-2);border:0;border-radius:8px;font-size:15px;"></div>
     <div class="field"><label for="authPass">Contraseña</label>
@@ -522,7 +522,7 @@ window.storage = {
 function mostrarApp(){
   document.getElementById('auth-lock').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
-  loadAll();
+  loadAll().then(()=>cargarStockReal()).then(()=>render());
   aplicarModoOscuroGuardado();
 }
 function togglePasswordVisible(){
@@ -3269,13 +3269,35 @@ function renderTareasPendientesWidget(compacto){
 }
 
 /* ================= STOCK ================= */
+async function cargarStockReal(){
+  const { data: mats } = await sb.from('materiales').select('codigo, catalogo_articulo_id, stock_minimo').eq('eliminado', false).not('catalogo_articulo_id','is', null);
+  if(!mats || !mats.length){ state.stock = []; state.movimientosStock = []; return; }
+  const codigos = mats.map(m=>m.codigo);
+  const { data: movs } = await sb.from('movimientos').select('id, codigo_material, tipo, cantidad, fecha, nota').eq('eliminado', false).in('codigo_material', codigos).order('fecha', {ascending:false});
+  const totales = {};
+  (movs||[]).forEach(m=>{
+    const signo = m.tipo==='entrada'? 1 : -1;
+    totales[m.codigo_material] = (totales[m.codigo_material]||0) + signo*(m.cantidad||0);
+  });
+  state.stock = mats.map(m=>({
+    id: m.codigo, articuloId: m.catalogo_articulo_id, cantidad: Math.round((totales[m.codigo]||0)*1000)/1000,
+    stockMinimo: m.stock_minimo||0, ubicacion:'', notas:''
+  }));
+  state.movimientosStock = (movs||[]).map(m=>{
+    const mat = mats.find(x=>x.codigo===m.codigo_material);
+    return { id:m.id, articuloId: mat?mat.catalogo_articulo_id:null, fecha:(m.fecha||'').slice(0,10), tipo:m.tipo, cantidad:m.cantidad, motivo:m.nota||'', origen:'' };
+  });
+}
+window.cargarStockReal = cargarStockReal;
 async function registrarMovimientoStock(articuloId, tipo, cantidad, motivo, origen){
-  let s = state.stock.find(x=>x.articuloId===articuloId);
-  if(!s){ s = {id:uid(), articuloId, cantidad:0, stockMinimo:0, ubicacion:'', notas:''}; state.stock.push(s); }
-  s.cantidad = Math.round((s.cantidad + (tipo==='entrada'? Math.abs(cantidad) : -Math.abs(cantidad)))*1000)/1000;
-  state.movimientosStock.push({id:uid(), articuloId, fecha:todayISO(), tipo, cantidad:Math.abs(cantidad), motivo, origen});
-  await persist('stock');
-  await persist('movimientosStock');
+  const codigoMaterial = 'CAT-'+articuloId;
+  const { error } = await sb.from('movimientos').insert({
+    id: uid(), fecha: new Date().toISOString(), tipo, codigo_material: codigoMaterial,
+    cantidad: Math.abs(cantidad), nota: motivo + (origen? ' ['+origen+']' : ''),
+    eliminado: false, actualizado_en: Date.now()
+  });
+  if(error){ toast('No se pudo registrar el movimiento: '+error.message, true); return; }
+  await cargarStockReal();
 }
 function abrirAjusteStock(articuloId){ openModal('ajusteStock', null, null, {articuloId: articuloId||''}); }
 window.abrirAjusteStock = abrirAjusteStock;
