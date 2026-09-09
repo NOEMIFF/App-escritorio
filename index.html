@@ -402,8 +402,56 @@ const ENTIDADES_RELACIONALES = {
       notas: f.notas||'', presupuestoId: f.presupuesto_id||null, planning: f.planning||{capitulos:[],tareas:[]},
       m2Totales: f.m2_totales
     };}
+  },
+  catalogo: {
+    tabla: 'catalogo_articulos',
+    aFila(a){ return {
+      codigo: a.id, nombre: a.nombre||'', tipo: a.tipo||null, proveedor_codigo: a.proveedorId||null,
+      referencia_propia: a.referenciaPropia||null, notas: a.empaquetadoNota||null,
+      datos: {
+        referencia: a.referencia||'', esAluminio: !!a.esAluminio, acabado: a.acabado||'', acabadoDetalle: a.acabadoDetalle||'',
+        peso: a.peso??null, perimetro: a.perimetro??null, precioUnitario: a.precioUnitario??null,
+        empaquetadoTipo: a.empaquetadoTipo||'', empaquetadoCantidad: a.empaquetadoCantidad??null,
+        precioHistorial: a.precioHistorial||[]
+      },
+      eliminado: false, actualizado_en: Date.now()
+    };},
+    aObjeto(f){ const d=f.datos||{}; return {
+      id: f.codigo, nombre: f.nombre||'', tipo: f.tipo||'', proveedorId: f.proveedor_codigo||'',
+      referenciaPropia: f.referencia_propia||'', empaquetadoNota: f.notas||'',
+      referencia: d.referencia||'', esAluminio: !!d.esAluminio, acabado: d.acabado||'', acabadoDetalle: d.acabadoDetalle||'',
+      peso: d.peso??null, perimetro: d.perimetro??null, precioUnitario: d.precioUnitario??null,
+      empaquetadoTipo: d.empaquetadoTipo||'', empaquetadoCantidad: d.empaquetadoCantidad??null,
+      precioHistorial: d.precioHistorial||[]
+    };}
   }
 };
+
+async function sincronizarMaterialesDesdeCatalogo(arr){
+  const filas = arr.map(a=>{
+    const prov = state.proveedores.find(p=>p.id===a.proveedorId);
+    return {
+      codigo: 'CAT-'+a.id,
+      descripcion: a.nombre||'',
+      unidad: (a.esAluminio && a.tipo==='Perfilería') ? 'ml' : 'ud',
+      grupo: a.tipo || 'Catálogo',
+      proveedor: prov? prov.nombre : null,
+      codigo_propio: a.referenciaPropia || null,
+      catalogo_articulo_id: a.id,
+      eliminado: false, actualizado_en: Date.now()
+    };
+  });
+  if(filas.length){
+    const { error } = await sb.from('materiales').upsert(filas, {onConflict:'codigo'});
+    if(error) console.error('Sync materiales desde catálogo', error);
+  }
+  const idsActuales = new Set(arr.map(a=>'CAT-'+a.id));
+  const { data: existentesSincronizados } = await sb.from('materiales').select('codigo').eq('eliminado', false).not('catalogo_articulo_id','is', null);
+  const borrados = (existentesSincronizados||[]).map(x=>x.codigo).filter(c=>!idsActuales.has(c));
+  if(borrados.length){
+    await sb.from('materiales').update({eliminado:true, actualizado_en:Date.now()}).in('codigo', borrados);
+  }
+}
 
 async function supabaseGetArray(key){
   const cfg = ENTIDADES_RELACIONALES[key];
@@ -425,6 +473,7 @@ async function supabaseSetArray(key, arr){
   if(borrados.length){
     await sb.from(cfg.tabla).update({eliminado:true, actualizado_en:Date.now()}).in('codigo', borrados);
   }
+  if(key==='catalogo'){ await sincronizarMaterialesDesdeCatalogo(arr); }
   return true;
 }
 
@@ -7075,7 +7124,7 @@ function abrirConfirmarVaciarDatos(){ openModal('confirmarVaciar'); }
 window.abrirConfirmarVaciarDatos = abrirConfirmarVaciarDatos;
 function modalConfirmarVaciar(){
   return `<h3>Vaciar datos del presupuestador</h3>
-    <div class="modal-sub">Esto eliminará presupuestos, catálogo de aluminio, precios, plantillas y festivos guardados, y los sustituirá por datos de ejemplo. <strong>No toca obras, proveedores, clientes ni personal</strong> — esos son compartidos de verdad con la app de almacén y nunca se borran desde aquí. Esta acción no se puede deshacer.</div>
+    <div class="modal-sub">Esto eliminará presupuestos, precios de aluminio, plantillas y festivos guardados, y los sustituirá por datos de ejemplo. <strong>No toca obras, proveedores, clientes, personal ni el catálogo</strong> — esos son compartidos de verdad con la app de almacén y nunca se borran desde aquí. Esta acción no se puede deshacer.</div>
     <div class="modal-foot"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" style="background:var(--danger);border-color:var(--danger);" onclick="confirmarVaciarTodo()">Sí, vaciar y cargar ejemplos</button></div>`;
 }
 async function confirmarVaciarTodo(){
@@ -7089,7 +7138,7 @@ async function confirmarVaciarTodo(){
 window.confirmarVaciarTodo = confirmarVaciarTodo;
 function modalConfirmarSeed(){
   return `<h3>Cargar datos de ejemplo</h3>
-    <div class="modal-sub">Ya tienes datos guardados. ¿Quieres añadir también los datos de ejemplo? Se sumarán a lo que ya tienes. <strong>Aviso:</strong> los ejemplos de obras, proveedores, clientes y personal se guardan en las tablas compartidas con la app de almacén — se verán también ahí. Si solo quieres probar, hazlo con cuidado o avisa a quien use la otra app.</div>
+    <div class="modal-sub">Ya tienes datos guardados. ¿Quieres añadir también los datos de ejemplo? Se sumarán a lo que ya tienes. <strong>Aviso:</strong> los ejemplos de obras, proveedores, clientes, personal y catálogo se guardan en las tablas compartidas con la app de almacén — se verán también ahí (el catálogo, además, genera materiales de stock automáticamente). Si solo quieres probar, hazlo con cuidado o avisa a quien use la otra app.</div>
     <div class="modal-foot"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="closeModal(); seedExampleData(true);">Añadir datos de ejemplo</button></div>`;
 }
 async function clearAllData(){
