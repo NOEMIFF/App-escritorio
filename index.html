@@ -450,7 +450,7 @@ async function sincronizarMaterialesDesdeCatalogo(arr){
     if(error) console.error('Sync materiales desde catálogo', error);
   }
   const idsActuales = new Set(arr.map(a=>'CAT-'+a.id));
-  const { data: existentesSincronizados } = await sb.from('materiales').select('codigo').eq('eliminado', false).not('catalogo_articulo_id','is', null);
+  const { data: existentesSincronizados } = await sb.from('materiales').select('codigo').not('eliminado','is',true).not('catalogo_articulo_id','is', null);
   const borrados = (existentesSincronizados||[]).map(x=>x.codigo).filter(c=>!idsActuales.has(c));
   if(borrados.length){
     await sb.from('materiales').update({eliminado:true, actualizado_en:Date.now()}).in('codigo', borrados);
@@ -459,13 +459,13 @@ async function sincronizarMaterialesDesdeCatalogo(arr){
 
 async function supabaseGetArray(key){
   const cfg = ENTIDADES_RELACIONALES[key];
-  const { data, error } = await sb.from(cfg.tabla).select('*').eq('eliminado', false);
+  const { data, error } = await sb.from(cfg.tabla).select('*').not('eliminado','is',true);
   if(error){ console.error('Supabase get '+key, error); return []; }
   return data.map(cfg.aObjeto);
 }
 async function supabaseSetArray(key, arr){
   const cfg = ENTIDADES_RELACIONALES[key];
-  const { data: existentes } = await sb.from(cfg.tabla).select('codigo').eq('eliminado', false);
+  const { data: existentes } = await sb.from(cfg.tabla).select('codigo').not('eliminado','is',true);
   const idsActuales = new Set(arr.map(x=>x.id));
   const idsExistentes = new Set((existentes||[]).map(x=>x.codigo));
   const filas = arr.map(cfg.aFila);
@@ -3269,11 +3269,36 @@ function renderTareasPendientesWidget(compacto){
 }
 
 /* ================= STOCK ================= */
+async function sincronizarCatalogoDesdeMateriales(){
+  const { data: sueltos, error } = await sb.from('materiales').select('*').not('eliminado','is',true).is('catalogo_articulo_id', null);
+  if(error){ console.error('Sync catálogo desde materiales', error); return; }
+  if(!sueltos || !sueltos.length) return;
+  const nuevos = sueltos.map(m=>{
+    const prov = state.proveedores.find(p=>p.nombre===m.proveedor);
+    return {
+      id: uid(), nombre: m.descripcion||m.codigo, tipo: m.grupo||'Otros',
+      proveedorId: prov? prov.id : '', referencia:'', esAluminio:false,
+      referenciaPropia: m.codigo_propio||'', acabado:'', acabadoDetalle:'',
+      peso:null, perimetro:null, precioUnitario:null,
+      empaquetadoTipo:'', empaquetadoCantidad:null, empaquetadoNota:'',
+      precioHistorial: [], _codigoMaterial: m.codigo
+    };
+  });
+  const filas = nuevos.map(n=>ENTIDADES_RELACIONALES.catalogo.aFila(n));
+  const { error: errIns } = await sb.from('catalogo_articulos').upsert(filas, {onConflict:'codigo'});
+  if(errIns){ console.error('Sync catálogo desde materiales (insert)', errIns); return; }
+  for(const n of nuevos){
+    await sb.from('materiales').update({catalogo_articulo_id: n.id}).eq('codigo', n._codigoMaterial);
+  }
+  nuevos.forEach(n=>{ delete n._codigoMaterial; state.catalogo.push(n); });
+  toast(nuevos.length+' artículo(s) nuevo(s) traídos desde el almacén al catálogo');
+}
+window.sincronizarCatalogoDesdeMateriales = sincronizarCatalogoDesdeMateriales;
 async function cargarStockReal(){
-  const { data: mats } = await sb.from('materiales').select('codigo, catalogo_articulo_id, stock_minimo').eq('eliminado', false).not('catalogo_articulo_id','is', null);
+  const { data: mats } = await sb.from('materiales').select('codigo, catalogo_articulo_id, stock_minimo').not('eliminado','is',true).not('catalogo_articulo_id','is', null);
   if(!mats || !mats.length){ state.stock = []; state.movimientosStock = []; return; }
   const codigos = mats.map(m=>m.codigo);
-  const { data: movs } = await sb.from('movimientos').select('id, codigo_material, tipo, cantidad, fecha, nota').eq('eliminado', false).in('codigo_material', codigos).order('fecha', {ascending:false});
+  const { data: movs } = await sb.from('movimientos').select('id, codigo_material, tipo, cantidad, fecha, nota').not('eliminado','is',true).in('codigo_material', codigos).order('fecha', {ascending:false});
   const totales = {};
   (movs||[]).forEach(m=>{
     const signo = m.tipo==='entrada'? 1 : -1;
