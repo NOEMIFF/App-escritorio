@@ -522,8 +522,50 @@ window.storage = {
 function mostrarApp(){
   document.getElementById('auth-lock').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
-  loadAll().then(()=>cargarStockReal()).then(()=>render());
+  loadAll().then(()=>sincronizarCatalogoDesdeMateriales()).then(()=>cargarStockReal()).then(()=>render());
   aplicarModoOscuroGuardado();
+  iniciarRealtime();
+}
+
+/* ================= TIEMPO REAL (avisos de la app Móvil) ================= */
+const TABLAS_REALTIME = [
+  {tabla:'obras', entidad:'obras', etiqueta:'una obra', color:'#3E6E8E'},
+  {tabla:'proveedores', entidad:'proveedores', etiqueta:'un proveedor', color:'#3E6E8E'},
+  {tabla:'clientes', entidad:'clientes', etiqueta:'un cliente', color:'#3E6E8E'},
+  {tabla:'responsables', entidad:'trabajadores', etiqueta:'el personal', color:'#8464B0'},
+  {tabla:'catalogo_articulos', entidad:'catalogo', etiqueta:'el catálogo', color:'#20794A'},
+  {tabla:'materiales', entidad:null, etiqueta:'el almacén', color:'#20794A'},
+  {tabla:'movimientos', entidad:null, etiqueta:'un movimiento de stock', color:'#C74A11'},
+  {tabla:'gastos', entidad:null, etiqueta:'un gasto', color:'#C22E2E'},
+];
+let __realtimeDebounce = {};
+function iniciarRealtime(){
+  if(!sb || window.__canalRealtime) return;
+  const canal = sb.channel('cambios-app-movil');
+  TABLAS_REALTIME.forEach(t=>{
+    canal.on('postgres_changes', {event:'*', schema:'public', table:t.tabla}, payload=>manejarCambioRealtime(t, payload));
+  });
+  canal.subscribe();
+  window.__canalRealtime = canal;
+}
+function manejarCambioRealtime(t, payload){
+  clearTimeout(__realtimeDebounce[t.tabla]);
+  __realtimeDebounce[t.tabla] = setTimeout(async ()=>{
+    if(t.entidad && ENTIDADES_RELACIONALES[t.entidad]){
+      state[t.entidad] = await supabaseGetArray(t.entidad);
+    }
+    if(t.tabla==='materiales' || t.tabla==='movimientos'){
+      await cargarStockReal();
+    }
+    const verbo = payload.eventType==='INSERT'?'Nuevo':(payload.eventType==='DELETE'?'Eliminado':'Actualizado');
+    state.notificacionesMovil = state.notificacionesMovil || [];
+    state.notificacionesMovil.unshift({
+      id: uid(), tipo:'App Móvil', titulo: verbo+' en '+t.etiqueta, fecha: new Date().toISOString(), color:t.color, leida:false
+    });
+    state.notificacionesMovil = state.notificacionesMovil.slice(0, 30);
+    toast('📲 '+verbo+' en '+t.etiqueta+' (desde la app Móvil)');
+    render();
+  }, 700);
 }
 function togglePasswordVisible(){
   const input = document.getElementById('authPass');
@@ -759,7 +801,7 @@ const STEPS = [{n:1,label:'Datos generales'},{n:2,label:'Capítulos'},{n:3,label
 let state = {
   tab:'dashboard',
   proveedores:[], clientes:[], catalogo:[], preciosAluminio:[], presupuestos:[], plantillas:[],
-  eventos:[], obras:[], notificaciones:[], pedidos:[], tareas:[], certificaciones:[], stock:[], movimientosStock:[], trabajadores:[], festivos:[], plantillasPresupuesto:[], calMesPersonal:null, personalCalVista:'mensual',
+  eventos:[], obras:[], notificaciones:[], pedidos:[], tareas:[], certificaciones:[], stock:[], movimientosStock:[], trabajadores:[], festivos:[], plantillasPresupuesto:[], calMesPersonal:null, personalCalVista:'mensual', notificacionesMovil:[],
   pedidosFilter:{estado:'', proveedorId:''}, __openMenuPedido:null,
   stockFilter:{q:''}, __openMenuStock:null,
   personalFilter:{estado:'activos'}, __openMenuTrabajador:null, trabajadorDetailId:null, trabajadorMedia:{}, controlSemana:null,
@@ -2619,6 +2661,10 @@ function getNotificacionesPendientes(){
   const puesto = state.miPuesto || '';
   const cfg = (puesto && state.configNotificaciones[puesto]) || null;
   const list = [];
+  (state.notificacionesMovil||[]).forEach(n=>{
+    if(n.leida) return;
+    list.push({id:'movil:'+n.id, tipo:n.tipo, titulo:n.titulo, fecha:n.fecha, color:n.color, marcar:`marcarNotifMovilLeida('${n.id}')`});
+  });
   state.eventos.forEach(ev=>{
     if(!ev.notificar || !ev.notificar.activo || ev.notifLeida) return;
     if(ev.fecha > hoy) return;
@@ -2635,6 +2681,12 @@ function getNotificacionesPendientes(){
   });
   return list.sort((a,b)=>a.fecha.localeCompare(b.fecha));
 }
+function marcarNotifMovilLeida(id){
+  const n = (state.notificacionesMovil||[]).find(x=>x.id===id); if(!n) return;
+  n.leida = true;
+  render();
+}
+window.marcarNotifMovilLeida = marcarNotifMovilLeida;
 async function marcarEventoLeido(id){
   const ev = state.eventos.find(e=>e.id===id); if(!ev) return;
   ev.notifLeida = true;
